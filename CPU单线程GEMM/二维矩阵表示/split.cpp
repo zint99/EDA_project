@@ -8,7 +8,6 @@
 #include "common.h"
 #define isprint 0
 #define MAX_SIZE 2048
-// extern const int MAX_SIZE = 2048;
 
 double a[MAX_SIZE][MAX_SIZE], b[MAX_SIZE][MAX_SIZE], c[MAX_SIZE][MAX_SIZE];
 
@@ -33,6 +32,7 @@ void test_gemm() {
     }
     printf("GEMM通用矩阵乘法已完成，用时：%f ms.\n", endtime * 1000);
 }
+
 void test_gemm_changeOrder() {
     start = clock();
     gemm_order(a, b, c, m, k, n);
@@ -50,6 +50,29 @@ void test_gemm_changeOrder() {
         }
     }
     printf("GEMM改变循环顺序优化矩阵乘法已完成，用时：%f ms.\n", endtime * 1000);
+}
+
+void test_gemm_split() {
+    start = clock();
+    if (m != n || m != k || n != k || m % 4 != 0) {
+        gemm(a, b, c, m, k, n);
+    } else {
+        gemm_split(a, b, c, m, k, n);
+    }
+    end = clock();
+    endtime = (double)(end - start) / CLOCKS_PER_SEC;
+
+    if (isprint) {
+        printf("=======================================================================\n");
+        printf("矩阵C有%d行%d列 ：\n", m, n);
+        for (int i = 0; i < m; i++) {
+            for (int j = 0; j < n; j++) {
+                printf("%.2f\t", c[i][j]);
+            }
+            printf("\n");
+        }
+    }
+    printf("GEMM循环拆分优化矩阵乘法已完成，用时：%f ms.\n", endtime * 1000);
 }
 
 void test_strassen() {
@@ -111,8 +134,12 @@ int main() {
     test_gemm();
     // test_strassen();
     // test_winograd();
-    test_gemm_changeOrder();
+
     /* 循环拆分向量化avx */
     // 1. 测试调换循环顺序对GEMM的影响
+    // test_gemm_changeOrder();
+
+    // 2. 循环拆分
+    test_gemm_split();
     return 0;
 }

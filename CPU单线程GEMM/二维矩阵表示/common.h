@@ -109,6 +109,78 @@ void gemm_order(double (*a)[MAX_SIZE], double (*b)[MAX_SIZE], double (*c)[MAX_SI
     }
 }
 
+// 循环拆分
+void gemm_split(double (*a)[MAX_SIZE], double (*b)[MAX_SIZE], double (*c)[MAX_SIZE], const int m, const int k, const int n) {
+    for (int i = 0; i < n; i += 4) {
+        for (int j = 0; j < m; j += 4) {
+            // 使用寄存器保存c矩阵中的元素值，减少访存
+            register double c00 = 0;
+            register double c01 = 0;
+            register double c02 = 0;
+            register double c03 = 0;
+            register double c10 = 0;
+            register double c11 = 0;
+            register double c12 = 0;
+            register double c13 = 0;
+            register double c20 = 0;
+            register double c21 = 0;
+            register double c22 = 0;
+            register double c23 = 0;
+            register double c30 = 0;
+            register double c31 = 0;
+            register double c32 = 0;
+            register double c33 = 0;
+            for (int l = 0; l < k; l += 4) {
+                // 计算核总共要计算16个C中元素
+                // 在计算核中c的16个元素不变，所有可以存放到上层循环中，减少访存；
+                // 在每轮计算核中，a和b某些元素会重复访存，所以可以先用寄存器register保存起来，减少访存；
+                for (int t = 0; t < 3; t++) {
+                    register double a0t = a[i][l + t];
+                    register double a1t = a[i][l + t];
+                    register double a2t = a[i][l + t];
+                    register double a3t = a[i][l + t];
+                    register double bt0 = b[l + t][j + 0];
+                    register double bt1 = b[l + t][j + 1];
+                    register double bt2 = b[l + t][j + 2];
+                    register double bt3 = b[l + t][j + 3];
+                    c00 = a0t * bt0;
+                    c01 = a0t * bt1;
+                    c02 = a0t * bt2;
+                    c03 = a0t * bt3;
+                    c10 = a1t * bt0;
+                    c11 = a1t * bt1;
+                    c12 = a1t * bt2;
+                    c13 = a1t * bt3;
+                    c20 = a2t * bt0;
+                    c21 = a2t * bt1;
+                    c22 = a2t * bt2;
+                    c23 = a2t * bt3;
+                    c30 = a3t * bt0;
+                    c31 = a3t * bt1;
+                    c32 = a3t * bt2;
+                    c33 = a3t * bt3;
+                }
+            }
+            c[i + 0][j + 0] = c00;
+            c[i + 0][j + 1] = c01;
+            c[i + 0][j + 2] = c02;
+            c[i + 0][j + 3] = c03;
+            c[i + 1][j + 0] = c10;
+            c[i + 1][j + 1] = c11;
+            c[i + 1][j + 2] = c12;
+            c[i + 1][j + 3] = c13;
+            c[i + 2][j + 0] = c20;
+            c[i + 2][j + 1] = c21;
+            c[i + 2][j + 2] = c22;
+            c[i + 2][j + 3] = c23;
+            c[i + 3][j + 0] = c30;
+            c[i + 3][j + 1] = c31;
+            c[i + 3][j + 2] = c32;
+            c[i + 3][j + 3] = c33;
+        }
+    }
+}
+
 void strassen(double (*a)[MAX_SIZE], double (*b)[MAX_SIZE], double (*c)[MAX_SIZE], const int m, const int k, const int n) {
     // strassen算法通过将矩阵划分为更小的子矩阵来实现。需要确定矩阵尺寸的阈值决定使用传统GEMM还是strassen算法
     // 如果阶数小于64或不为2的次幂，则直接调用朴素GEMM计算
