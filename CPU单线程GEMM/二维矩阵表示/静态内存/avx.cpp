@@ -1,3 +1,19 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <math.h>
+#include <vector>
+#include <string.h>
+#include <random> // 引入随机数生成器和浮点数分布的头文件
+#define isprint 0
+#define MAX_SIZE 2048
+
+double a[MAX_SIZE][MAX_SIZE], b[MAX_SIZE][MAX_SIZE], c[MAX_SIZE][MAX_SIZE];
+
+int m, n, k;
+clock_t start, end;
+double endtime;
+
 /**
  *  GEMM优化方法
  *      1. 基于算法优化：借助辅助矩阵，减少矩阵乘法次数
@@ -5,14 +21,9 @@
  *          1.2 coppersmith-winograd(O^2.3)
  *      2. 基于软件优化：优化访存，增加cache hit rate，并行计算提速
  *          2.1 改变循环顺序(ijk)-> (ikj)，在一千阶矩阵下，GEMM提升五倍
- *          2.2 循环拆分blocking
+ *          2.2 循环拆分
  *          2.3 SIMD向量化指令
  */
-
-#include <random> // 引入随机数生成器和浮点数分布的头文件
-#define isprint 0
-const int MAX_SIZE = 2048;
-
 // 中间数组
 // ab_{ij}分别表示乘数矩阵的四个子矩阵
 double a11[MAX_SIZE][MAX_SIZE], a12[MAX_SIZE][MAX_SIZE], a21[MAX_SIZE][MAX_SIZE], a22[MAX_SIZE][MAX_SIZE];
@@ -109,11 +120,13 @@ void gemm_order(double (*a)[MAX_SIZE], double (*b)[MAX_SIZE], double (*c)[MAX_SI
     }
 }
 
-// 循环拆分
+// 循环拆分，每次同时计算C的4 * 4 = 16个元素，同时使用到了A的连续4行和B的连续4列
 void gemm_split(double (*a)[MAX_SIZE], double (*b)[MAX_SIZE], double (*c)[MAX_SIZE], const int m, const int k, const int n) {
-    for (int i = 0; i < n; i += 4) {
-        for (int j = 0; j < m; j += 4) {
+    for (int i = 0; i < m; i += 4) {
+        for (int j = 0; j < n; j += 4) {
+            // 循环展开，GEMM是每次计算C中的一个元素，展开后是每次计算C中16个元素
             // 使用寄存器保存c矩阵中的元素值，减少访存
+            // c00 == c[i+0][j+0]，下标为偏移量
             register double c00 = 0;
             register double c01 = 0;
             register double c02 = 0;
@@ -131,34 +144,113 @@ void gemm_split(double (*a)[MAX_SIZE], double (*b)[MAX_SIZE], double (*c)[MAX_SI
             register double c32 = 0;
             register double c33 = 0;
             for (int l = 0; l < k; l += 4) {
-                // 计算核总共要计算16个C中元素
-                // 在计算核中c的16个元素不变，所有可以存放到上层循环中，减少访存；
                 // 在每轮计算核中，a和b某些元素会重复访存，所以可以先用寄存器register保存起来，减少访存；
-                for (int t = 0; t < 3; t++) {
-                    register double a0t = a[i][l + t];
-                    register double a1t = a[i][l + t];
-                    register double a2t = a[i][l + t];
-                    register double a3t = a[i][l + t];
+                // 如果不写下面这个循环，则要写64个计算操作。
+                for (int t = 0; t < 4; t++) {
+                    // 每轮循环拿出A一列和B一行，计算1/4个C
+                    // 每轮有16条计算指令，总共64条
+                    // 循环拆分的作用是减少访存，而非减少计算量。通过向量化操作可以一条计算指令操作4次计算，将总计算指令降低到16条。
+                    register double a0t = a[i + 0][l + t];
+                    register double a1t = a[i + 1][l + t];
+                    register double a2t = a[i + 2][l + t];
+                    register double a3t = a[i + 3][l + t];
                     register double bt0 = b[l + t][j + 0];
                     register double bt1 = b[l + t][j + 1];
                     register double bt2 = b[l + t][j + 2];
                     register double bt3 = b[l + t][j + 3];
-                    c00 = a0t * bt0;
-                    c01 = a0t * bt1;
-                    c02 = a0t * bt2;
-                    c03 = a0t * bt3;
-                    c10 = a1t * bt0;
-                    c11 = a1t * bt1;
-                    c12 = a1t * bt2;
-                    c13 = a1t * bt3;
-                    c20 = a2t * bt0;
-                    c21 = a2t * bt1;
-                    c22 = a2t * bt2;
-                    c23 = a2t * bt3;
-                    c30 = a3t * bt0;
-                    c31 = a3t * bt1;
-                    c32 = a3t * bt2;
-                    c33 = a3t * bt3;
+                    c00 += a0t * bt0;
+                    c01 += a0t * bt1;
+                    c02 += a0t * bt2;
+                    c03 += a0t * bt3;
+                    c10 += a1t * bt0;
+                    c11 += a1t * bt1;
+                    c12 += a1t * bt2;
+                    c13 += a1t * bt3;
+                    c20 += a2t * bt0;
+                    c21 += a2t * bt1;
+                    c22 += a2t * bt2;
+                    c23 += a2t * bt3;
+                    c30 += a3t * bt0;
+                    c31 += a3t * bt1;
+                    c32 += a3t * bt2;
+                    c33 += a3t * bt3;
+                }
+            }
+            c[i + 0][j + 0] = c00;
+            c[i + 0][j + 1] = c01;
+            c[i + 0][j + 2] = c02;
+            c[i + 0][j + 3] = c03;
+            c[i + 1][j + 0] = c10;
+            c[i + 1][j + 1] = c11;
+            c[i + 1][j + 2] = c12;
+            c[i + 1][j + 3] = c13;
+            c[i + 2][j + 0] = c20;
+            c[i + 2][j + 1] = c21;
+            c[i + 2][j + 2] = c22;
+            c[i + 2][j + 3] = c23;
+            c[i + 3][j + 0] = c30;
+            c[i + 3][j + 1] = c31;
+            c[i + 3][j + 2] = c32;
+            c[i + 3][j + 3] = c33;
+        }
+    }
+}
+
+// 循环拆分，每次同时计算C的4 * 4 = 16个元素，同时使用到了A的连续4行和B的连续4列
+// avx向量指令
+void gemm_avx(double (*a)[MAX_SIZE], double (*b)[MAX_SIZE], double (*c)[MAX_SIZE], const int m, const int k, const int n) {
+    for (int i = 0; i < m; i += 4) {
+        for (int j = 0; j < n; j += 4) {
+            // 循环展开，GEMM是每次计算C中的一个元素，展开后是每次计算C中16个元素
+            // 使用寄存器保存c矩阵中的元素值，减少访存
+            // c00 == c[i+0][j+0]，下标为偏移量
+            register double c00 = 0;
+            register double c01 = 0;
+            register double c02 = 0;
+            register double c03 = 0;
+            register double c10 = 0;
+            register double c11 = 0;
+            register double c12 = 0;
+            register double c13 = 0;
+            register double c20 = 0;
+            register double c21 = 0;
+            register double c22 = 0;
+            register double c23 = 0;
+            register double c30 = 0;
+            register double c31 = 0;
+            register double c32 = 0;
+            register double c33 = 0;
+            for (int l = 0; l < k; l += 4) {
+                // 在每轮计算核中，a和b某些元素会重复访存，所以可以先用寄存器register保存起来，减少访存；
+                // 如果不写下面这个循环，则要写64个计算操作。
+                for (int t = 0; t < 4; t++) {
+                    // 每轮循环拿出A一列和B一行，计算1/4个C
+                    // 每轮有16条计算指令，总共64条
+                    // 循环拆分的作用是减少访存，而非减少计算量。通过向量化操作可以一条计算指令操作4次计算，将总计算指令降低到16条。
+                    register double a0t = a[i + 0][l + t];
+                    register double a1t = a[i + 1][l + t];
+                    register double a2t = a[i + 2][l + t];
+                    register double a3t = a[i + 3][l + t];
+                    register double bt0 = b[l + t][j + 0];
+                    register double bt1 = b[l + t][j + 1];
+                    register double bt2 = b[l + t][j + 2];
+                    register double bt3 = b[l + t][j + 3];
+                    c00 += a0t * bt0;
+                    c01 += a0t * bt1;
+                    c02 += a0t * bt2;
+                    c03 += a0t * bt3;
+                    c10 += a1t * bt0;
+                    c11 += a1t * bt1;
+                    c12 += a1t * bt2;
+                    c13 += a1t * bt3;
+                    c20 += a2t * bt0;
+                    c21 += a2t * bt1;
+                    c22 += a2t * bt2;
+                    c23 += a2t * bt3;
+                    c30 += a3t * bt0;
+                    c31 += a3t * bt1;
+                    c32 += a3t * bt2;
+                    c33 += a3t * bt3;
                 }
             }
             c[i + 0][j + 0] = c00;
@@ -312,4 +404,134 @@ void Winograd(double (*a)[MAX_SIZE], double (*b)[MAX_SIZE], double (*c)[MAX_SIZE
             c[i + Divide][j + Divide] = c22[i][j];
         }
     }
+}
+
+void test_gemm() {
+    start = clock();
+    gemm(a, b, c, m, k, n);
+    end = clock();
+    endtime = (double)(end - start) / CLOCKS_PER_SEC;
+
+    if (isprint) {
+        printf("=======================================================================\n");
+        printf("矩阵C有%d行%d列 ：\n", m, n);
+        for (int i = 0; i < m; i++) {
+            for (int j = 0; j < n; j++) {
+                printf("%.2f\t", c[i][j]);
+            }
+            printf("\n");
+        }
+    }
+    printf("GEMM通用矩阵乘法已完成，用时：%f ms.\n", endtime * 1000);
+}
+
+void test_gemm_changeOrder() {
+    start = clock();
+    gemm_order(a, b, c, m, k, n);
+    end = clock();
+    endtime = (double)(end - start) / CLOCKS_PER_SEC;
+
+    if (isprint) {
+        printf("=======================================================================\n");
+        printf("矩阵C有%d行%d列 ：\n", m, n);
+        for (int i = 0; i < m; i++) {
+            for (int j = 0; j < n; j++) {
+                printf("%.2f\t", c[i][j]);
+            }
+            printf("\n");
+        }
+    }
+    printf("GEMM改变循环顺序优化矩阵乘法已完成，用时：%f ms.\n", endtime * 1000);
+}
+
+void test_gemm_split() {
+    start = clock();
+    if (m != n || m != k || n != k || m % 4 != 0) {
+        gemm(a, b, c, m, k, n);
+    } else {
+        gemm_split(a, b, c, m, k, n);
+    }
+    end = clock();
+    endtime = (double)(end - start) / CLOCKS_PER_SEC;
+
+    if (isprint) {
+        printf("=======================================================================\n");
+        printf("矩阵C有%d行%d列 ：\n", m, n);
+        for (int i = 0; i < m; i++) {
+            for (int j = 0; j < n; j++) {
+                printf("%.2f\t", c[i][j]);
+            }
+            printf("\n");
+        }
+    }
+    printf("GEMM循环拆分优化矩阵乘法已完成，用时：%f ms.\n", endtime * 1000);
+}
+
+void test_strassen() {
+    // Strassen
+    printf("\nStrassen优化GEMM矩阵乘法开始\n");
+    // memset(c, 0, sizeof(double) * MAX_SIZE * MAX_SIZE);
+    start = clock();
+    strassen(a, b, c, m, k, n);
+    end = clock();
+    endtime = (double)(end - start) / CLOCKS_PER_SEC;
+
+    if (isprint) {
+        printf("=======================================================================\n");
+        printf("矩阵C有%d行%d列 ：\n", m, n);
+        for (int i = 0; i < m; i++) {
+            for (int j = 0; j < n; j++) {
+                printf("%.2f\t", c[i][j]);
+            }
+            printf("\n");
+        }
+    }
+    printf("Strassen优化GEMM矩阵乘法已完成，用时：%f ms.\n", endtime * 1000);
+}
+
+void test_winograd() {
+    // CW
+    printf("\nCoppersmith-Winograd优化GEMM矩阵乘法开始\n");
+    // memset(c, 0, sizeof(double) * MAX_SIZE * MAX_SIZE);
+    start = clock();
+    Winograd(a, b, c, m, k, n);
+    end = clock();
+    endtime = (double)(end - start) / CLOCKS_PER_SEC;
+
+    if (isprint) {
+        printf("=======================================================================\n");
+        printf("矩阵C有%d行%d列 ：\n", m, n);
+        for (int i = 0; i < m; i++) {
+            for (int j = 0; j < n; j++) {
+                printf("%.2f\t", c[i][j]);
+            }
+            printf("\n");
+        }
+    }
+    printf("Coppersmith-Winograd优化GEMM矩阵乘法已完成，用时：%f ms.\n", endtime * 1000);
+}
+
+int main() {
+    printf("请依次输入m，k，n的值（不超过2048）：");
+    scanf("%d%d%d", &m, &k, &n);
+    while (m > 2048 || n > 2048 || k > 2048) {
+        printf("请输入小于2048的值");
+        scanf("%d%d%d", &m, &k, &n);
+    }
+
+    initMatrix(a, b, m, k, n);
+
+    print_A_B(a, b, m, k, n);
+
+    test_gemm();
+    // test_strassen();
+    // test_winograd();
+
+    /* 循环拆分向量化avx */
+    // 1. 测试调换循环顺序对GEMM的影响
+    // test_gemm_changeOrder();
+
+    // 2. 循环拆分
+    test_gemm_split();
+    return 0;
 }
